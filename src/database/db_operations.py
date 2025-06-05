@@ -1,5 +1,7 @@
 from typing import Optional, List, Dict
+from datetime import datetime
 from src.database.db_manager import db_manager
+import asyncio
 
 def refund(
     invoice_id: Optional[int], 
@@ -60,74 +62,160 @@ def refund(
 
     return float(total_refund)
 
-def lookup(
-    customer_first_name: str,
-    customer_last_name: str,
-    customer_phone: str,
+async def lookup_track(query: str) -> List[Dict]:
+    """Async lookup for tracks."""
+    sql = """
+    SELECT DISTINCT
+        Track.Name as track_name, 
+        Artist.Name as artist_name, 
+        Album.Title as album_title,
+        Track.Milliseconds as duration
+    FROM Track
+    JOIN Album ON Track.AlbumId = Album.AlbumId
+    JOIN Artist ON Album.ArtistId = Artist.ArtistId
+    WHERE LOWER(Track.Name) LIKE LOWER(?)
+    """
+    
+    # Run DB query in thread pool
+    results = await asyncio.to_thread(
+        db_manager.execute_query,
+        sql,
+        [f"%{query}%"]
+    )
+    
+    return [
+        {
+            "track_name": row[0],
+            "artist_name": row[1],
+            "album_title": row[2],
+            "duration": row[3]
+        }
+        for row in results
+    ]
+
+def lookup_album(query: str) -> List[Dict]:
+    """Look up albums in the database."""
+    sql = """
+    SELECT DISTINCT
+        Track.Name as track_name, 
+        Artist.Name as artist_name, 
+        Album.Title as album_title,
+        Track.Milliseconds as duration
+    FROM Album
+    JOIN Track ON Album.AlbumId = Track.AlbumId
+    JOIN Artist ON Album.ArtistId = Artist.ArtistId
+    WHERE LOWER(Album.Title) LIKE LOWER(?)
+    """
+    results = db_manager.execute_query(sql, [f"%{query}%"])
+    
+    return [
+        {
+            "track_name": row[0],
+            "artist_name": row[1],
+            "album_title": row[2],
+            "duration": row[3]
+        }
+        for row in results
+    ]
+
+def lookup_artist(query: str) -> List[Dict]:
+    """Look up artists in the database."""
+    sql = """
+    SELECT DISTINCT
+        Track.Name as track_name, 
+        Artist.Name as artist_name, 
+        Album.Title as album_title,
+        Track.Milliseconds as duration
+    FROM Track
+    JOIN Album ON Track.AlbumId = Album.AlbumId
+    JOIN Artist ON Album.ArtistId = Artist.ArtistId
+    WHERE LOWER(Artist.Name) LIKE LOWER(?)
+    """
+    # Extract artist name from query
+    artist_name = query.lower().replace("tracks by ", "").replace("songs by ", "")
+    search_term = f"%{artist_name}%"
+    
+    print(f"Searching for artist: {search_term}")
+    results = db_manager.execute_query(sql, [search_term])
+    
+    return [
+        {
+            "track_name": row[0],
+            "artist_name": row[1],
+            "album_title": row[2],
+            "duration": row[3]
+        }
+        for row in results
+    ]
+
+async def lookup(
+    customer_first_name: Optional[str] = None,
+    customer_last_name: Optional[str] = None,
+    customer_phone: Optional[str] = None,
     track_name: Optional[str] = None,
     album_title: Optional[str] = None,
     artist_name: Optional[str] = None,
-    purchase_date_iso_8601: Optional[str] = None,
+    purchase_date: Optional[str] = None
 ) -> List[Dict]:
-    """Find all of the Invoice Line IDs in the Chinook DB for the given filters.
-
-    Returns:
-        a list of dictionaries that contain keys: {
-            'invoice_line_id',
-            'track_name',
-            'artist_name',
-            'purchase_date',
-            'quantity_purchased',
-            'price_per_unit'
-        }
-    """
-    query = """
-    SELECT
-        il.InvoiceLineId,
-        t.Name as track_name,
-        art.Name as artist_name,
-        i.InvoiceDate as purchase_date,
-        il.Quantity as quantity_purchased,
-        il.UnitPrice as price_per_unit
-    FROM InvoiceLine il
-    JOIN Invoice i ON il.InvoiceId = i.InvoiceId
-    JOIN Customer c ON i.CustomerId = c.CustomerId
-    JOIN Track t ON il.TrackId = t.TrackId
-    JOIN Album alb ON t.AlbumId = alb.AlbumId
-    JOIN Artist art ON alb.ArtistId = art.ArtistId
-    WHERE c.FirstName = ?
-    AND c.LastName = ?
-    AND c.Phone = ?
-    """
-
-    params = [customer_first_name, customer_last_name, customer_phone]
-
+    """Look up customer purchases based on provided criteria."""
+    conditions = []
+    params = []
+    
+    if customer_first_name:
+        conditions.append("LOWER(Customer.FirstName) LIKE LOWER(?)")
+        params.append(f"%{customer_first_name}%")
+    
+    if customer_last_name:
+        conditions.append("LOWER(Customer.LastName) LIKE LOWER(?)")
+        params.append(f"%{customer_last_name}%")
+        
+    if customer_phone:
+        conditions.append("Customer.Phone LIKE ?")
+        params.append(f"%{customer_phone}%")
+        
     if track_name:
-        query += " AND t.Name = ?"
-        params.append(track_name)
-
+        conditions.append("LOWER(Track.Name) LIKE LOWER(?)")
+        params.append(f"%{track_name}%")
+        
     if album_title:
-        query += " AND alb.Title = ?"
-        params.append(album_title)
-
+        conditions.append("LOWER(Album.Title) LIKE LOWER(?)")
+        params.append(f"%{album_title}%")
+        
     if artist_name:
-        query += " AND art.Name = ?"
-        params.append(artist_name)
-
-    if purchase_date_iso_8601:
-        query += " AND date(i.InvoiceDate) = date(?)"
-        params.append(purchase_date_iso_8601)
-
-    results = db_manager.execute_query(query, tuple(params))
-
+        conditions.append("LOWER(Artist.Name) LIKE LOWER(?)")
+        params.append(f"%{artist_name}%")
+        
+    if purchase_date:
+        conditions.append("DATE(Invoice.InvoiceDate) = DATE(?)")
+        params.append(purchase_date)
+    
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+    
+    sql = f"""
+    SELECT DISTINCT
+        InvoiceLine.InvoiceLineId,
+        Track.Name as track_name,
+        Artist.Name as artist_name,
+        Invoice.InvoiceDate as purchase_date,
+        InvoiceLine.UnitPrice as price_per_unit
+    FROM Customer
+    JOIN Invoice ON Customer.CustomerId = Invoice.CustomerId
+    JOIN InvoiceLine ON Invoice.InvoiceId = InvoiceLine.InvoiceId
+    JOIN Track ON InvoiceLine.TrackId = Track.TrackId
+    JOIN Album ON Track.AlbumId = Album.AlbumId
+    JOIN Artist ON Album.ArtistId = Artist.ArtistId
+    WHERE {where_clause}
+    ORDER BY Invoice.InvoiceDate DESC
+    """
+    
+    results = db_manager.execute_query(sql, params)
     return [
         {
             "invoice_line_id": row[0],
             "track_name": row[1],
             "artist_name": row[2],
             "purchase_date": row[3],
-            "quantity_purchased": row[4],
-            "price_per_unit": row[5],
+            "price_per_unit": row[4]
         }
         for row in results
-    ] 
+    ]

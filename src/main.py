@@ -1,18 +1,15 @@
 import os
+from typing import List, TypedDict, Annotated
+from langchain_core.messages import BaseMessage
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langgraph.graph import END, StateGraph
-from langsmith import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.callbacks.tracers import LangChainTracer
-from typing import Dict, Any
-
-from src.models.types import State, PurchaseInformation, UserIntent
+from langgraph.graph import StateGraph, END
 from src.agents.agent_nodes import AgentNodes
+from src.models.types import State
 from src.tools import lookup_tools
-from src.utils.config import setup_langsmith
-from src.database.db_manager import db_manager
-from src.utils.graph_utils import create_traced_node
-
+from src.models.types import PurchaseInformation
+from src.database.db_operations import lookup, refund
 def setup_vectorstores():
     """Create vectorstore indexes for all artists, albums, and songs."""
     embeddings = GoogleGenerativeAIEmbeddings(
@@ -57,32 +54,39 @@ def init_models(tracer):
 
     return info_llm, qa_llm, router_llm
 
-def build_graph(tracer: LangChainTracer) -> StateGraph:
+def build_graph(tracer=None):
     """Build the agent workflow graph."""
-    # Initialize models and agent nodes
-    info_llm, qa_llm, router_llm = init_models(tracer)
-    agent_nodes = AgentNodes(info_llm, qa_llm, router_llm)
-
-    # Define the state schema
-    workflow = StateGraph(
-        state_schema=State,
+    # Initialize Gemini model for all agent roles
+    base_llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=0,
+        convert_system_message_to_human=True,
+        top_p=0.8,
+        max_output_tokens=1024,
+        callbacks=[tracer] if tracer else None
     )
     
-    # Add nodes with tracing
-    create_traced_node(workflow, "route", agent_nodes.route_request, tracer)
-    create_traced_node(workflow, "gather_info", agent_nodes.gather_info, tracer)
-    create_traced_node(workflow, "process_refund", agent_nodes.process_refund, tracer)
-    create_traced_node(workflow, "process_lookup", agent_nodes.process_lookup, tracer)
-    create_traced_node(workflow, "process_music_query", agent_nodes.process_music_query, tracer)
-    create_traced_node(workflow, "default_response", agent_nodes.default_response, tracer)
-
-    # Make the flow strictly sequential
-    workflow.set_entry_point("route")
+    # Create agent nodes
+    agent = AgentNodes(
+        router_llm=base_llm,
+        qa_llm=base_llm,
+        info_llm=base_llm
+    )
     
-    # Route node conditional edges
+    # Build graph
+    workflow = StateGraph(state_schema=State)
+    
+    # Add nodes
+    workflow.add_node("route", agent.route_request)
+    workflow.add_node("process_music_query", agent.process_music_query)
+    workflow.add_node("gather_info", agent.gather_info)
+    workflow.add_node("default_response", agent.default_response)
+    
+    # Configure edges
+    workflow.set_entry_point("route")
     workflow.add_conditional_edges(
         "route",
-        lambda x: x.get("next", "gather_info"),
+        lambda x: x["next"],
         {
             "gather_info": "gather_info",
             "process_music_query": "process_music_query",
@@ -90,24 +94,10 @@ def build_graph(tracer: LangChainTracer) -> StateGraph:
         }
     )
     
-    # Gather info conditional edges
-    workflow.add_conditional_edges(
-        "gather_info",
-        lambda x: x.get("next", "default_response"),
-        {
-            "process_refund": "process_refund",
-            "process_lookup": "process_lookup",
-            "default_response": "default_response"
-        }
-    )
+    # Add terminal edges
+    for node in ["gather_info", "process_music_query", "default_response"]:
+        workflow.add_edge(node, END)
     
-    # Add edges for terminal nodes
-    workflow.add_edge("process_refund", END)
-    workflow.add_edge("process_lookup", END)
-    workflow.add_edge("process_music_query", END)
-    workflow.add_edge("default_response", END)
-
-    # Compile the graph
     return workflow.compile()
 
-__all__ = ["setup_vectorstores", "init_models", "build_graph"] 
+__all__ = ["setup_vectorstores", "init_models", "build_graph"]

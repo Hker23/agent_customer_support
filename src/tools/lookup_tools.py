@@ -1,10 +1,17 @@
 from typing import Optional, List, Dict, Tuple
-from langchain_core.tools import tool
+from langchain.tools import tool
+from langchain.tools import Tool
 from langchain_core.vectorstores import VectorStore
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.documents import Document
 from src.database.db_manager import db_manager
+from src.database.db_operations import (
+    lookup_track as db_lookup_track,
+    lookup_album as db_lookup_album,
+    lookup_artist as db_lookup_artist
+)
+from src.models.types import MusicSearchResult
 
 def setup_vectorstores(embeddings: GoogleGenerativeAIEmbeddings) -> Tuple[VectorStore, VectorStore, VectorStore]:
     """Create vectorstore indexes for all artists, albums, and songs."""
@@ -33,95 +40,36 @@ def setup_vectorstores(embeddings: GoogleGenerativeAIEmbeddings) -> Tuple[Vector
 
     return track_store, artist_store, album_store
 
-@tool
-def lookup_track(
-    track_name: Optional[str] = None,
-    album_title: Optional[str] = None,
-    artist_name: Optional[str] = None,
-) -> List[Dict]:
-    """Lookup a track in Chinook DB based on identifying information."""
-    query = """
-    SELECT DISTINCT t.Name as track_name, ar.Name as artist_name, al.Title as album_name
-    FROM Track t
-    JOIN Album al ON t.AlbumId = al.AlbumId
-    JOIN Artist ar ON al.ArtistId = ar.ArtistId
-    WHERE 1=1
-    """
-    params = []
+def lookup_track(query: str) -> List[Dict]:
+    """Search for tracks in the music database."""
+    return db_lookup_track(query)
 
-    if track_name:
-        query += " AND t.Name LIKE ?"
-        params.append(f"%{track_name}%")
-    if album_title:
-        query += " AND al.Title LIKE ?"
-        params.append(f"%{album_title}%")
-    if artist_name:
-        query += " AND ar.Name LIKE ?"
-        params.append(f"%{artist_name}%")
+def lookup_album(query: str) -> List[Dict]:
+    """Search for albums in the music database."""
+    return db_lookup_album(query)
 
-    results = db_manager.execute_query(query, tuple(params))
-    
-    return [
-        {"track_name": row[0], "artist_name": row[1], "album_name": row[2]}
-        for row in results
-    ]
+def lookup_artist(query: str) -> List[Dict]:
+    """Search for artists in the music database."""
+    return db_lookup_artist(query)
 
-@tool
-def lookup_album(
-    track_name: Optional[str] = None,
-    album_title: Optional[str] = None,
-    artist_name: Optional[str] = None,
-) -> List[Dict]:
-    """Lookup an album in Chinook DB based on identifying information."""
-    query = """
-    SELECT DISTINCT al.Title as album_name, ar.Name as artist_name
-    FROM Album al
-    JOIN Artist ar ON al.ArtistId = ar.ArtistId
-    LEFT JOIN Track t ON t.AlbumId = al.AlbumId
-    WHERE 1=1
-    """
-    params = []
+# Create tool instances - removed async/coroutine flags
+track_tool = Tool(
+    name="lookup_track",
+    func=lookup_track,
+    description="Search for tracks in the music database"
+)
 
-    if track_name:
-        query += " AND t.Name LIKE ?"
-        params.append(f"%{track_name}%")
-    if album_title:
-        query += " AND al.Title LIKE ?"
-        params.append(f"%{album_title}%")
-    if artist_name:
-        query += " AND ar.Name LIKE ?"
-        params.append(f"%{artist_name}%")
+album_tool = Tool(
+    name="lookup_album",
+    func=lookup_album,
+    description="Search for albums in the music database"
+)
 
-    results = db_manager.execute_query(query, tuple(params))
-    
-    return [{"album_name": row[0], "artist_name": row[1]} for row in results]
+artist_tool = Tool(
+    name="lookup_artist",
+    func=lookup_artist,
+    description="Search for artists in the music database"
+)
 
-@tool
-def lookup_artist(
-    track_name: Optional[str] = None,
-    album_title: Optional[str] = None,
-    artist_name: Optional[str] = None,
-) -> List[str]:
-    """Lookup an artist in Chinook DB based on identifying information."""
-    query = """
-    SELECT DISTINCT ar.Name as artist_name
-    FROM Artist ar
-    LEFT JOIN Album al ON al.ArtistId = ar.ArtistId
-    LEFT JOIN Track t ON t.AlbumId = al.AlbumId
-    WHERE 1=1
-    """
-    params = []
-
-    if track_name:
-        query += " AND t.Name LIKE ?"
-        params.append(f"%{track_name}%")
-    if album_title:
-        query += " AND al.Title LIKE ?"
-        params.append(f"%{album_title}%")
-    if artist_name:
-        query += " AND ar.Name LIKE ?"
-        params.append(f"%{artist_name}%")
-
-    results = db_manager.execute_query(query, tuple(params))
-    
-    return [row[0] for row in results] 
+__all__ = ['lookup_track', 'lookup_album', 'lookup_artist',
+           'track_tool', 'album_tool', 'artist_tool']

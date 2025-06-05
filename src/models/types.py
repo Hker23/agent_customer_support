@@ -1,41 +1,29 @@
-from typing import List, Optional
-from typing_extensions import Annotated, TypedDict
-from langchain_core.messages import AnyMessage
-from langgraph.graph.message import add_messages
-from langgraph.channels import last_value
+from typing import TypedDict, List, Literal, Optional
+from typing_extensions import NotRequired
+from langchain_core.messages import BaseMessage
 
 class State(TypedDict):
-    """Agent state."""
-    messages: Annotated[List[AnyMessage], add_messages]
-    followup: Annotated[Optional[str], last_value]
-    invoice_id: Optional[int]
-    invoice_line_ids: Optional[List[int]]
-    customer_first_name: Optional[str]
-    customer_last_name: Optional[str]
-    customer_phone: Optional[str]
-    track_name: Optional[str]
-    album_title: Optional[str]
-    artist_name: Optional[str]
-    purchase_date_iso_8601: Optional[str]
-
-class PurchaseInformation(TypedDict):
-    """All of the known information about the invoice / invoice lines the customer would like refunded."""
-    invoice_id: Optional[int]
-    invoice_line_ids: Optional[List[int]]
-    customer_first_name: Optional[str]
-    customer_last_name: Optional[str]
-    customer_phone: Optional[str]
-    track_name: Optional[str]
-    album_title: Optional[str]
-    artist_name: Optional[str]
-    purchase_date_iso_8601: Optional[str]
-    followup: Annotated[Optional[str], "If the user hasn't enough identifying information, please tell them what the required information is and ask them to specify it."]
+    """State maintained between nodes."""
+    messages: List[BaseMessage]
+    next: NotRequired[str]
+    followup: NotRequired[str]
 
 class UserIntent(TypedDict):
-    """The user's current intent in the conversation"""
-    intent: str  # Literal["refund", "question_answering"]
+    """Classification of user intent."""
+    intent: Literal["refund", "music_query", "hello"]
 
-class Grade(TypedDict):
-    """Compare the expected and actual answers and grade the actual answer."""
-    reasoning: Annotated[str, "Explain your reasoning for whether the actual response is correct or not."]
-    is_correct: Annotated[bool, "True if the student response is mostly or exactly correct, otherwise False."] 
+class PurchaseInformation(TypedDict):
+    """Customer purchase information."""
+    customer_name: Optional[str]
+    phone: Optional[str]
+    invoice_id: Optional[str]
+    track_name: Optional[str]
+    album_title: Optional[str]
+    purchase_date: Optional[str]
+
+class MusicSearchResult(TypedDict):
+    """Music search result format."""
+    track_name: str
+    artist_name: str
+    album_title: str
+    duration: int  # milliseconds
