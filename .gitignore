@@ -1,7 +1,2 @@
 .env
 env/
-setup.py
-.streamlit/
-chinook.db-journal
-questions.md
-STRUCTURE.md
