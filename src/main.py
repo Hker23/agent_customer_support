@@ -21,13 +21,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
 from typing import Literal, TypedDict, Annotated
 from langsmith import Client
+import pandas as pd
+from typing import Dict, Any
 # Local imports
 from src.core.models import State, UserIntent
 from src.agents.refund_agent import refund_graph
 from src.agents.qa_agent import qa_graph
 from src.core.database import download_chinook_db
 
-client = Client()
+
 class LangSmithTracer(BaseCallbackHandler):
     def __init__(self, client: Client, project_name: str):
         self.client = client
@@ -41,7 +43,8 @@ class LangSmithTracer(BaseCallbackHandler):
             project_name=self.project_name,
             inputs=kwargs.get("prompts", [])
         )
-
+        
+client = Client()
 tracer = LangSmithTracer(
     client=client,
     project_name="chinook-customer-support"
@@ -141,39 +144,151 @@ app_builder.add_edge("compile_followup", END)
 app_graph = app_builder.compile()
 
 
-st.title("Chinook Music Store Customer Service")
+def evaluate_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Evaluate a single response from the agent."""
+    response = result.get("followup", "")
+    
+    contains_music = any(word in response.lower() for word in [
+        "track", "album", "artist", "song", "duration"
+    ])
+    
+    contains_refund = any(word in response.lower() for word in [
+        "refund", "purchase", "invoice", "return"
+    ])
+    
+    contains_greeting = any(phrase in response.lower() for phrase in [
+        "help you", "assist", "music store"
+    ])
+    
+    return {
+        "Response Type": (
+            "Music Query" if contains_music 
+            else "Refund Request" if contains_refund 
+            else "Greeting" if contains_greeting 
+            else "Unknown"
+        ),
+        "Response": response,
+        "Length": len(response),
+        "Contains Music Info": "✓" if contains_music else "✗",
+        "Contains Refund Info": "✓" if contains_refund else "✗",
+        "Contains Greeting": "✓" if contains_greeting else "✗"
+    }
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Add tabs to separate chat and evaluation
+tab1, tab2 = st.tabs(["Chat", "Evaluation"])
 
-# Display chat messages from history on app rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+with tab1:
+    st.title("Chinook Music Store Customer Service")
+    
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# React to user input
-if prompt := st.chat_input("What can I help you with?"):
-    # Display user message in chat message container
-    st.chat_message("user").markdown(prompt)
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # Run the graph
-    with st.spinner("Thinking..."):
-        # Prepare initial state for the graph
-        initial_state = {"messages": [{"role": "user", "content": prompt}]}
-        
-        result = app_graph.invoke(
-            initial_state,
-            config=config
-        )
+    # React to user input
+    if prompt := st.chat_input("What can I help you with?"):
+        # Display user message in chat message container
+        st.chat_message("user").markdown(prompt)
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Get the response (assuming the 'followup' key is set by the graph's last node)
-        response = result.get("followup", "I'm sorry, I couldn't process that request.")
+        # Run the graph
+        with st.spinner("Thinking..."):
+            # Prepare initial state for the graph
+            initial_state = {"messages": [{"role": "user", "content": prompt}]}
+            
+            result = app_graph.invoke(
+                initial_state,
+                config=config
+            )
 
-    # Display assistant response in chat message container
-    with st.chat_message("assistant"):
-        st.markdown(response)
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
+            # Get the response (assuming the 'followup' key is set by the graph's last node)
+            response = result.get("followup", "I'm sorry, I couldn't process that request.")
+
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+with tab2:
+    st.title("Agent Evaluation")
+    
+    # Test input area
+    test_input = st.text_area("Enter test input:", height=100)
+    
+    if st.button("Test Agent"):
+        if test_input:
+            try:
+                with st.spinner("Processing..."):
+                    initial_state = {
+                        "messages": [{"role": "user", "content": test_input}]
+                    }
+                    
+                    result = app_graph.invoke(
+                        initial_state,
+                        config=config
+                    )
+                    
+                    evaluation = evaluate_response(result)
+                    
+                    # Display results
+                    st.subheader("Evaluation Results")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Response Type", evaluation["Response Type"])
+                    with col2:
+                        st.metric("Response Length", evaluation["Length"])
+                    with col3:
+                        st.write("Content Checks:")
+                        st.write(f"Music Info: {evaluation['Contains Music Info']}")
+                        st.write(f"Refund Info: {evaluation['Contains Refund Info']}")
+                        st.write(f"Greeting: {evaluation['Contains Greeting']}")
+                    
+                    st.subheader("Agent Response")
+                    st.info(evaluation["Response"])
+                    
+                    # Add to history
+                    if "eval_history" not in st.session_state:
+                        st.session_state.eval_history = []
+                    st.session_state.eval_history.append({
+                        "Input": test_input,
+                        **evaluation
+                    })
+                    
+                    # Show history
+                    if st.session_state.eval_history:
+                        st.subheader("Test History")
+                        df = pd.DataFrame(st.session_state.eval_history)
+                        st.dataframe(df)
+                        
+                        if st.button("Export Results"):
+                            st.download_button(
+                                "Download CSV",
+                                df.to_csv(index=False).encode('utf-8'),
+                                "agent_evaluation_results.csv",
+                                "text/csv",
+                                key='download-csv'
+                            )
+            
+            except Exception as e:
+                st.error(f"Error during evaluation: {str(e)}")
+        else:
+            st.warning("Please enter some test input first.")
+    
+    # Sample test cases in sidebar
+    st.sidebar.subheader("Sample Test Cases")
+    sample_tests = {
+        "Music Query": "Do you have any Pink Floyd albums?",
+        "Refund Request": "I want to return a song I bought yesterday",
+        "General Question": "What kind of help can you provide?"
+    }
+    
+    for label, test in sample_tests.items():
+        if st.sidebar.button(f"Try: {label}"):
+            st.text_area("Enter test input:", value=test, height=100, key=f"sample_{label}")

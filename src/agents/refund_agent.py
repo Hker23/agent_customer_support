@@ -25,38 +25,41 @@ specify:
 
 If the customer has not specified the required information (either Invoice/Invoice Line IDs \
 or first name, last name, phone) then please ask them to specify it."""
-info_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash").with_structured_output(
-    PurchaseInformation, method="json_schema", include_raw=True
-)
+info_llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-pro-latest",
+    temperature=0,
+    convert_system_message_to_human=True
+).with_structured_output(PurchaseInformation)
 
 def gather_info(state: State) -> Command[Literal["lookup_action", "refund_action", END]]:
     """Gathers information needed for refund processing"""
     try:
-        info = info_llm.invoke(
-            [
-                {"role": "system", "content": gather_info_instructions},
-                *state["messages"],
-            ]
-        )
+        # Extract user's message
+        user_message = state["messages"][-1].content if state["messages"] else ""
         
-        # Extract parsed data and raw message
-        parsed = info["parsed"]
-        raw_message = info["raw"]
+        # Get structured information
+        parsed = info_llm.invoke([
+            {"role": "system", "content": gather_info_instructions},
+            {"role": "user", "content": user_message}
+        ])
         
-        # Determine next action based on parsed data
+        # Determine next action and prepare response
         if any(parsed.get(k) for k in ("invoice_id", "invoice_line_ids")):
+            response = "I'll help you process that refund right away."
             goto = "refund_action"
-        elif all(
-            parsed.get(k)
-            for k in ("customer_first_name", "customer_last_name", "customer_phone")
-        ):
+        elif all(parsed.get(k) for k in ("customer_name", "phone")):
+            response = "Let me look up your purchase history."
             goto = "lookup_action"
         else:
+            response = ("To help you with a refund, I need:\n"
+                       "• Your full name\n"
+                       "• Phone number\n"
+                       "Could you please provide these details?")
             goto = END
             
         # Create state update
         update = {
-            "messages": [{"role": "assistant", "content": raw_message.content}]
+            "messages": [{"role": "assistant", "content": response}]
         }
         update.update(parsed)  # Add parsed fields to state
         
@@ -64,8 +67,10 @@ def gather_info(state: State) -> Command[Literal["lookup_action", "refund_action
         
     except Exception as e:
         print(f"Error in gather_info: {str(e)}")
+        error_msg = ("I'm having trouble processing your refund request. "
+                    "Could you please provide your name and phone number?")
         return Command(
-            update={"messages": [{"role": "assistant", "content": "Could you rephrase that?"}]},
+            update={"messages": [{"role": "assistant", "content": error_msg}]},
             goto=END
         )
 
